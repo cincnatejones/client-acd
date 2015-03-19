@@ -11,6 +11,11 @@ $(function() {
     SP.username = $('#client_name').text();
     SP.currentCall = null;  //instance variable for tracking current connection
     SP.requestedHold = false; //set if agent requested hold button
+    SP.worker = null;
+    SP.actvities = {
+      ready: null,
+      notReady: null
+    };
 
 
 
@@ -41,9 +46,39 @@ $(function() {
         $("#callerid-entry > input").val(data);
       });
 
+      // Register the TaskRouter worker
+      $.get("/workertoken", {"client":SP.username}, function (workerToken) {
+          SP.worker = new Twilio.TaskRouter.Worker(workerToken);
+          SP.functions.registerTaskRouterCallbacks();
+          var activitySids = {};
+
+          // For this demo we assume basic states to map to the existing Ready/Not Ready so we will
+          // take 1 ready and 1 not ready event
+          // In real app we would make an interface with dynamic state drop down and map them here
+          SP.worker.fetchActivityList(function(error, activityList) {
+            var activities = activityList.activities;
+            var i = activities.length;
+            while (i--) {
+              if (activities[i].available){
+                SP.actvities.ready = activities[i].sid
+              } else {
+                SP.actvities.notReady = activities[i].sid
+              }       
+            }
+          });
+      });
+
       SP.functions.startWebSocket();
 
+    }
 
+    // callback for TaskRouter to tell use when agent state has changed
+    SP.functions.registerTaskRouterCallbacks = function(){
+      console.dir("Register callbacks");
+      SP.worker.on('activity.update', function(worker) {
+        SP.functions.updateStatus("", worker);
+        console.log("Worker activity changed to: " + worker.activity_name);
+      });
     }
 
 
@@ -288,8 +323,6 @@ $(function() {
 
     });
 
-
-
     // ** Twilio Client Stuff ** //
     // first register outside of sfdc
 
@@ -299,6 +332,7 @@ $(function() {
           var defaultclient = {}
           defaultclient.result = SP.username;
           SP.functions.registerTwilioClient(defaultclient);
+
       } else 
       {
         console.log("In an iframe, assume it is Salesforce");
@@ -306,9 +340,6 @@ $(function() {
       }
     //this will only be called inside of salesforce
     
-
-    
-
     Twilio.Device.ready(function (device) {
       sforce.interaction.cti.enableClickToDial();
       sforce.interaction.cti.onClickToDial(startCall); 
@@ -354,6 +385,7 @@ $(function() {
 
     Twilio.Device.connect(function (conn) {
 
+
         console.dir(conn);
         var  status = "";
 
@@ -368,7 +400,7 @@ $(function() {
 
         }
 
-        console.dir(conn);
+        //console.dir(conn);
 
 
         SP.functions.updateAgentStatusText("onCall", status);
@@ -379,17 +411,11 @@ $(function() {
         SP.functions.attachMuteButton(conn);
         SP.functions.attachHoldButton(conn, SP.calltype);
 
-        //send status info
-        $.post("/track", { "from":SP.username, "status":"OnCall" }, function(data) {
-            
-        });
-
     });
 
     /* Listen for incoming connections */
     Twilio.Device.incoming(function (conn) {
-
-
+      
       // Update agent status 
       sforce.interaction.setVisible(true);  //pop up CTI console
       SP.functions.updateAgentStatusText("ready", ( conn.parameters.From), true);
@@ -404,8 +430,6 @@ $(function() {
         
 
       }
-
-
 
       var inboundnum = cleanInboundTwilioNumber(conn.parameters.From);
       var sid = conn.parameters.CallSid
@@ -437,32 +461,34 @@ $(function() {
 
     // Set server-side status to ready / not-ready
     SP.functions.notReady = function() {
-      $.post("/track", { "from":SP.username, "status":"NotReady" }, function(data) {
-        SP.functions.updateStatus();
+      //$.post("/track", { "from":SP.username, "status":"NotReady" }, function(data) {
+      //  SP.functions.updateStatus();
+      //});
+      SP.worker.updateActivity(SP.actvities.notReady, function(error, worker){
+        SP.functions.updateStatus(error, worker);
       });
+      
     }
 
     SP.functions.ready = function() {
 
-      $.post("/track", { "from":SP.username, "status":"Ready" }, function(data) {
-          SP.functions.updateStatus();
-
+      //$.post("/track", { "from":SP.username, "status":"Ready" }, function(data) {
+      //    SP.functions.updateStatus();
+      //
+      //});
+      SP.worker.updateActivity(SP.actvities.ready, function(error, worker){
+        SP.functions.updateStatus(error, worker);
       });
     }
 
 
     // Check the status on the server and update the agent status dialog accordingly
-    SP.functions.updateStatus = function() {
-      $.get("/status", { "from":SP.username}, function(data) {
-        if (data == "NotReady" || data == "Missed") {
-             SP.functions.updateAgentStatusText("notReady", "Not Ready")
-         }
-
-        if (data == "Ready") {
-             SP.functions.updateAgentStatusText("ready", "Ready")
-         }
-      });
-
+    SP.functions.updateStatus = function(error, worker) {
+      if (worker.activity_name == "Idle") {
+        SP.functions.updateAgentStatusText("ready", "Ready");
+      } else {
+        SP.functions.updateAgentStatusText("notReady", "Not Ready");
+      }
     }
 
     /******** GENERAL FUNCTIONS for SFDC  ***********************/

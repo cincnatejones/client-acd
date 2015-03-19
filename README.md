@@ -1,17 +1,16 @@
-client-acd
+client-taskrouter-axd
 ==========
 
-Twilio ACD example - written with Ruby and HTML, Javascript,  websockets on the front end.  Deployable to Heroku. Embeddable in Salesforce Open CTI.
+Twilio AxD example where x = anything you want - written with Ruby and HTML, Javascript,  websockets on the front end.  Deployable to Heroku. Embeddable in Salesforce Open CTI.  The demo shows how you can route both calls and SMS to agents within salesforce.
+
+This is forked from choppen5's excellent demo of Twilio Client ACD.  This demo replaces Twilio Queue with TaskRouter to handle agent state and call/SMS routing.
 
 ![TwilioSoftphone](http://uploadir.com/u/vepiqfxq)
 
-For a one minute video demo: [YouTube](https://www.youtube.com/watch?v=kM5Ty0cO-AU)
-
-
 ##Features
 - Agent presence (ready/not ready buttons)
-- Twilio Queues
-- Automatic Call Distribution (ACD) - Delivering call from Twilio Queues to the longest availible agent
+- TaskRouter - queues, workers, activities, and tasks
+- Automatic Call and SMS Distribution - Delivering call and SMS from Twilio TaskRouter to the longest availible agent
 - Twilio Client - delivery to calls in the broswer
 - Realtime notifications of calls in queue, ready agents
 - Outbound calls, click2call from Salesforce
@@ -52,6 +51,24 @@ To get your configuration variables:
   - Note the Phone number created here. You will need it for later for the twilio_caller_id parameter.
   - You will also use this phone number to accept new calls once you create a Heroku (or local tunnel) deploy. You will add to your Twilio voice url: http://myapp.herokuapp.com/voice to accept new calls.
 
+- Create a TaskRouter Workspace
+  - Set name which can be anything - for example = Client-acd.
+  - Select "First In, First Out" as your template
+  - Set Event Callback to your app event handler: http://myapp.herokuapp.com/event
+  - Note the SID here.  You will need it later for the twilio_workspace_id parameter
+
+- Set the Default Workflow assignment URL
+  - Edit the Default Fifo Workflow that has been created for your workspace
+  - Set the *Assignment Callback URL* to http://myapp.herokuapp.com/assignment
+  - Note the Workflow SID. You will need it later for the twilio_workflow_id parameter
+
+- Get your Task Queue ID
+  - Go to TasksQueues.  Note the Sid of your Sample Queue. This will be used as your twilio_task_queue_id parameter
+
+- Create a Worker
+  - To use within salesforce set your worker friendly name to match your salesforce user ID with out special characters - for example - user@company.com friendly name would be userATcompanyDOTcom
+  - Give your worker attributes to tell TaskRouter where to deliver calls - {"contact_uri": "client:userATcompanyDOTcom"}
+
 
 
 ### Deploy to Heroku ####
@@ -64,11 +81,13 @@ To deploy to Heroku:
 -  Fill out the Config variables - this will create a new Heroku app and produce a new Heroku URL for the app
 -  Complete the [Twilio Config steps above with your new Heroku URL](https://github.com/choppen5/client-acd#twilio-config)
 -  After creating the Heroku app, note the URL.  
---  Go back in your Twilio Account, and set the voice URL for your Twilio app that was created in the pre-requesites. You have created a new Heroku app witha  URL, you can now set the path to that URL and add the /dial path. For example, if you created a Heroku app called  "http://myapp.herokuapp.com" you would set the Voice URL of your app to  http://myapp.herokuapp.com/dial.  
+  -  Go back in your Twilio Account, and set the voice URL for your Twilio app that was created in the pre-requesites. You have created a new Heroku app witha  URL, you can now set the path to that URL and add the /dial path. For example, if you created a Heroku app called  "http://myapp.herokuapp.com" you would set the Voice URL of your app to  http://myapp.herokuapp.com/dial 
+  - Set your Workspace Event call back to  http://myapp.herokuapp.com/event
+  - Set your Workflow Assignment URL to http://myapp.herokuapp.com/assignment
 
 ![TwimlApp](http://uploadir.com/u/scshlxls)
 
--- You now need to create configure your inbound number with your new Heroku url.  Add your Heroku app url + /voice to your Twilio voice URL.
+  - You now need to create configure your inbound number with your new Heroku url.  Add your Heroku app url + /voice to your Twilio voice URL.
 
 ![TiwmlApp](http://uploadir.com/u/m7k57r2s)
 
@@ -80,19 +99,16 @@ And that's it! You can take inbound calls!
 `heroku create` 
 this will create a Heroku URL you can use to complete the [Twilio Config steps above with your new Heroku URL](https://github.com/choppen5/client-acd#twilio-config)
 
-- Install MongoLab
-
-`heroku addons:add mongolab`
-
 Set your Heroku config - you can set ALL the environment variables with this command 
 (replace with your auth tokens etc):
 
 `heroku config:set twilio_account_sid=AC11ecc09xxxxxx`   
 `twilio_account_token=2ad0fb4ab2xxxxxxxxxxxxx` 
-`twilio_caller_id=+14156xxxxx` 
-`twilio_queue_name=CustomerService` 
-`twilio_dqueue_url=http://myapp.herokuapp.com/voice`
-`twilio_app_id=APab79b652xxxxxxxxx` 
+`twilio_caller_id=+14156xxxxx`  
+`twilio_app_id=APab79b652xxxxxxxxx`
+`twilio_workflow_id=WW*********************`
+`twilio_workspace_id=WS*********************`
+`twilio_task_queue_id=WQ*********************` 
 
 
 To check your config variables:
@@ -107,11 +123,11 @@ To deploy to heroku:
 ### Configure for running locally ####
 
 
-To run client ACD, you need a number of environment variables, either to run it locally or to run it on Heroku. You can get some of the configuration options within Twilio, such twilio_account_sid, twilio_account_token, twilio_caller_id, twilio_caller_id. You aslo need a url to handle calls, and that will be either the Heroku app you create, or your local machine via a tunneling service.
+To run client AxD, you need a number of environment variables, either to run it locally or to run it on Heroku. You can get some of the configuration options within Twilio, such twilio_account_sid, twilio_account_token, twilio_caller_id, etc. You aslo need a url to handle calls, and that will be either the Heroku app you create, or your local machine via a tunneling service.
 
 Set up code to run locally - this assumes you have the correct Ruby environment or can get it running:
 
-`git clone https://github.com/choppen5/client-acd.git`
+`git clone https://github.com/bcoyle73/client-acd.git`
 
 `cd client-acd`
 
@@ -130,11 +146,14 @@ twilio_app_id=**AP_id_of_the_appyoucreate**
 
 twilio_caller_id=**+1415551212** 
 
-twilio_queue_name=**CustomerService**
+twilio_workflow_id=WW********************* 
 
-twilio_dqueue_url=https://your.localserver.com/voice 
+twilio_workspace_id=WS*********************
 
-MONGOLAB_URI="mongodb://heroku:FSDFDSFSDFDSFSDFS@lex.mongolab.com:10079/XXXXXX"
+twilio_task_queue_id=WQ*********************
+
+
+
 
 
 ### Starting the process locally
@@ -165,9 +184,4 @@ This will start the process - locally for testing. To use this with Salesforce, 
 
 5.  Configuring screenpops
   - you can configure screenpop response, such as to pop the search screen, in Setup > Call Centers >  (your call center) -> Softphone Layout.  
-
-
-
-
-
 

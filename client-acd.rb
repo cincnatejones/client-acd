@@ -21,69 +21,21 @@ account_sid = ENV['twilio_account_sid']
 auth_token =  ENV['twilio_account_token']
 app_id =  ENV['twilio_app_id']
 caller_id = ENV['twilio_caller_id']  #number your agents will click2dialfrom
-qname = ENV['twilio_queue_name']
-dqueueurl = ENV['twilio_dqueue_url']
-mongohqdbstring = ENV['MONGOLAB_URI']
 anycallerid = ENV['anycallerid'] || "none"   #If you set this in your ENV anycallerid=inline the callerid box will be displayed to users.  To use anycallerid (agents set their own caller id), your Twilio Account must be provisioned.  So default is false, agents wont' be able to use any callerid. 
+workflow_id = ENV['twilio_workflow_id']
+workspace_id = ENV['twilio_workspace_id']
+task_queue_id = ENV['twilio_task_queue_id']
 
 
-########### DB Setup  ###################
-configure do
-  db = URI.parse(mongohqdbstring)
-  db_name = db.path.gsub(/^\//, '')   
-  @conn = Mongo::Connection.new(db.host, db.port).db(db_name)
-  @conn.authenticate(db.user, db.password) unless (db.user.nil? || db.user.nil?)
-  set :mongo_connection, @conn
-end
-# agents will be stored in 'agents' collection
-mongoagents = settings.mongo_connection['agents']
-mongocalls = settings.mongo_connection['calls']
-
-##### end of db config #######
-
-
-################ TWILLO CONFIG ################
-
-#Twilio rest client
-@client = Twilio::REST::Client.new(account_sid, auth_token)
-account = @client.account
-@queues = account.queues.list
-
-##### Twilio Queue setup:####
-# qname is a configuration vairable, but we need the queueid for this queue (we should have a helper method for this!!)
-queueid = nil
-@queues.each do |q|
-  logger.debug("Queue for this account = #{q.friendly_name}")
-  if q.friendly_name == qname
-    queueid = q.sid
-    logger.info("Queueid = #{queueid} for #{q.friendly_name}")
-  end
-end 
-
-unless queueid
-  #didn't find qname, create it
-  @queue = account.queues.create(:friendly_name => qname)
-  logger.info("Created queue #{qname}")
-  queueid = @queue.sid
-end
-
-## all that work for a queueid... this should be replaced by a help library method!
-queue1 = account.queues.get(queueid)
-
-
-logger.info("Calls will be queued to queueid = #{queueid}")
-
-## used when a 
+## used when outside of salesforce
 default_client =  "default_client"
 
-######### End of queue setup
+##### Twilio TaskRouter Client for workflow info
+@trclient = Twilio::REST::TaskRouterClient.new(account_sid, auth_token, workspace_id)
 
 logger.info("Starting up.. configuration complete")
 
 #### thred
-
-
-
 
 ######### Main request Urls #########
 
@@ -111,10 +63,30 @@ get '/token' do
       token = capability.generate
   return token
 end 
+
+## Receives the client id loops through the defined workers for this workspace
+## If a workers is defined with the client name it returns a token for the TaskRouter worker
+get '/workertoken' do
+  client_name = params[:client]
+  if client_name
+    @trclient = Twilio::REST::TaskRouterClient.new(account_sid, auth_token, workspace_id)
+    workertoken = nil
+    @trclient.workers.list.each do |worker|
+      logger.info worker.friendly_name
+      if worker.friendly_name == client_name
+        worker_capability = Twilio::TaskRouter::Capability.new account_sid, auth_token, workspace_id, worker.sid
+        worker_capability.allow_worker_fetch_attributes
+        worker_capability.allow_worker_activity_updates
+        workertoken = worker_capability.generate_token
+      end
+    end
+  end
+  return workertoken || ""
+end 
+
   
 ## WEBSOCKETS: Accepts a inbound websocket connection. Connection will be used to send messages to the browser, and detect disconnects
 # 1. creates or updates agent in the db, and tracks how many broswers are connected with the "currentclientcount" parameter
-# 2. changes agent status to "LOGGEDOUT" if no browsers are connected so we don't try to send calls to a non connected browser
 
 get '/websocket' do 
 
@@ -127,8 +99,6 @@ get '/websocket' do
       querystring = ws.request["query"]
       clientname = querystring.split(/\=/)[1]
       logger.info("Client #{clientname} connected from Websockets")
-      #update database with list of clients
-      mongoagents.update({_id: clientname} , { "$set" =>   {status: "LoggingIn",readytime: Time.now.to_f  },  "$inc"  =>  {:currentclientcount => 1}} , {upsert: true})
       settings.sockets << ws     
     end
 
@@ -147,17 +117,6 @@ get '/websocket' do
 
       settings.sockets.delete(ws)
 
-      ###Reduce count of websocket connections for this client
-      mongoagents.update({_id: clientname} , {  "$inc" => {currentclientcount: -1}});
-
-      #If this username has 0 clients, change him to logged out in the database.
-      mongonewclientcount = mongoagents.find_one({ _id: clientname})
-      logger.debug("updating mongonewclientcount = #{mongonewclientcount}")
-      if mongonewclientcount  
-        if mongonewclientcount["currentclientcount"] < 1
-           mongoagents.update({_id: clientname} , {  "$set" => {status: "LOGGEDOUT"}});
-        end
-      end
     end  ### End Websocket close
 
 
@@ -168,73 +127,18 @@ end ### End get /websocket
 
 # Handle incoming voice calls.. 
 # You point your inbound Twilio phone number inside your Twilio account to this url, such as https://yourserver.com/voice
-# Inbound calls will:
-# 1. Look for agent who has been "ready" the longest  (getlongestidle function), send the call to this agent
-# 2. If no agents are availbe, send the call to a queue (r.Enqueue(dialqueue))
+# Inbound calls will simply Enqueue the call to the workflow
 
 post '/voice' do
 
-    sid = params[:CallSid]
-    callerid = params[:Caller]  
-    addtoq = 0
-
-    bestclient = getlongestidle(true, mongoagents)
-    if bestclient
-       logger.debug("Routing incomming voice call to best agent = #{bestclient}")
-       client_name = bestclient
-    else 
-       dialqueue = qname
-    end
-
-    #if no client is choosen, route to queue
     response = Twilio::TwiML::Response.new do |r|  
-        if dialqueue  #If this variable is set, we have no agents to route to
-            addtoq = 1
-            r.Say("Please wait for the next availible agent ")
-            r.Enqueue(dialqueue)
-        else      #send to best agent   
-            r.Dial(:timeout=>"10", :action=>"/handledialcallstatus", :callerId => callerid)  do |d|
-                logger.debug("dialing client #{client_name}")
-
-                agentinfo = { _id: sid, agent: client_name, status: "Ringing" }
-                sidinsert = mongocalls.update({_id: sid},  agentinfo, {upsert: true})
-
-                d.Client client_name   
-            end
-        end
+        r.Say("Please wait for the next availible agent ")
+        r.Enqueue workflowSid: workflow_id
     end
     logger.debug("Response text for /voice post = #{response.text}")
     #update clients with new info, route calls if any
     #getqueueinfo(mongoagents,logger, queueid, addtoq)
     response.text
-end
-
-
-## This is called after an agent is sent a call (based on the :action parameter) - if an agent has missed a call change their status in the database
-post '/handledialcallstatus' do
-  sid = params[:CallSid]
-
-  if params['DialCallStatus'] == "no-answer"
-    mongosidinfo = {}
-    mongosidinfo = mongocalls.find_one ({_id: sid})
-    if mongosidinfo
-        mongoagent = mongosidinfo["agent"]   
-        mongoagents.update({_id: mongoagent}, { "$set" => {status:  "Missed"}}, {upsert: false})
-    end
-
-    response = Twilio::TwiML::Response.new do |r| 
-        ## Change agent status for agents that missed calls
-        r.Redirect('/voice')
-    end
-  else
-    response = Twilio::TwiML::Response.new do |r| 
-        ## Change agent status for agents that missed calls
-        r.Hangup
-    end
-  end
-
-  logger.debug("response.text  = #{response.text}")
-  response.text
 end
 
 
@@ -247,77 +151,42 @@ post '/dial' do
     puts "Params for dial = #{params}"
     
     number = params[:PhoneNumber]
-    dial_id = params[:CallerId] || caller_id
 
 
     response = Twilio::TwiML::Response.new do |r|
         # outboudn dialing (from client) must have a :callerId    
-        r.Dial :callerId => dial_id do |d|
+        r.Dial :callerId => caller_id do |d|
           d.Number number
         end
     end
     puts response.text
     response.text
 end
+
+#######  This is called when agents is selected by TaskRouter to send the task ###############
+## We will use the dequeue method of handling the assignment 
+### https://www.twilio.com/docs/taskrouter/handling-assignment-callbacks#dequeue-call
+post '/assignment' do
+  raw_attributes = params[:TaskAttributes]
+  attributes = JSON.parse raw_attributes
+  logger.info attributes
+  from = attributes["from"]
+  logger.info from
+  assignment_instruction = {
+    instruction: 'dequeue',
+    from: from
+  }
+  content_type :json
+  assignment_instruction.to_json
+
+end
+
+post '/event' do
+  # place holder for handling Workspace event callback
+  # this would be place to store all that data goodness
+
+end
 ######### End of Twilio methods
-
-######### Ajax stuff for tracking agent state.  ##################### 
-# DB will be ajax requests from the browser, such as changing from ready to not ready
-
-## /track takes a parameter "status" and updates the "from" client sending it
-post '/track' do
-    from = params[:from]
-    status = params[:status]
-
-    logger.debug("For client #{from} settings status to #{status}")
-    mongoagents.update({_id: from} , { "$set" =>   {status: status,readytime: Time.now.to_f}})
-
-    return ""
-end
-
-
-### /status returns status for a particular client.  Ajax clients query the server in certain cases to get their status
-get '/status' do
-    logger.debug("Getting a /status request with params = #{params}")
-    from = params[:from]
-
-    agentstatus = mongoagents.find_one ({_id: from})
-    if agentstatus
-       agentstatus = agentstatus["status"]
-    end
-    return agentstatus
-end
-
-post '/setcallerid' do
-    from = params[:from]
-    callerid = params[:callerid]
-
-    logger.debug("Updating callerid for #{from} to #{callerid}")
-    mongoagents.update({_id: from} , { "$set" =>   {callerid: callerid}})
-
-    return ""
-end
-
-
-get '/getcallerid' do
-    from = params[:from]
-
-    logger.debug("Getting callerid for #{from}")
-    callerid = ""
-    
-    agent = mongoagents.find_one ({_id: from})
-    if agent
-       callerid = agent["callerid"]
-    end
-
-    unless callerid
-      callerid = caller_id  #set to default env variable callerid
-    end
-
-    puts "returning callerid for #{from} = #{callerid}"
-    return callerid
-
-end
 
 #ajax request from Web UI, acccepts a casllsid, do a REST call to redirect to /hold
 post '/request_hold' do
@@ -380,63 +249,14 @@ post '/send_to_agent' do
 
 end
 
-#Method that gets all "Ready" agents, sorts by longest idle (ie, the first availible) 
-# If callrouting == true, this function is being called from voice routing, and we want to select a "Ready" agent or a "DeQueing" agent
-
-def getlongestidle (callrouting, mongoagents) 
-
-   queryfor = []
-
-   if callrouting == true
-     queryfor = [ {status: "Ready"}, status: "DeQueing"]
-   else
-     queryfor = [ {status: "Ready"} ]
-   end
-
-   mongoreadyagent =  mongoagents.find_one( { "$query" => { "$or" => queryfor } , "$orderby" => {readytime: 1}  } )
-
-   mongolongestidleagent = ""
-   if mongoreadyagent
-      mongolongestidleagent = mongoreadyagent["_id"]
-   else
-      mongolongestidleagent = nil
-   end 
-   return mongolongestidleagent
-
-end
-
-
-
-## Thread that polls to get current queue size, routes call if availible, and updates websocket clients with new info
+## Thread that polls to get current queue size, and updates websocket clients with new info
+## We now use the TaskRouter rest client to query workers and agents
 Thread.new do 
    while true do
      sleep(1)
- 
-     $sum += 1  
-     qsize = 0  
-     account_sid = ENV['twilio_account_sid']
-     auth_token =  ENV['twilio_account_token']
-     qname = ENV['twilio_queue_name']
-
-     @members = queue1.members
-     topmember =  @members.list.first 
-
-     mongoreadyagents = mongoagents.find({ status: "Ready"}).count()
-     readycount = mongoreadyagents || 0
-
-     qsize =  account.queues.get(queueid).current_size
-    
-      if topmember #only check for availible agent if there is a caller in queue
-        
-        bestclient = getlongestidle(false, mongoagents)
-        if bestclient
-          logger.info("Found best client - routing to #{bestclient} - setting agent to DeQueuing status so they aren't sent another call from the queue")
-          mongoagents.update({_id: bestclient} , { "$set" =>   {status: "DeQueing" }  } )   
-          topmember.dequeue(ENV['twilio_dqueue_url'])
-        else 
-          logger.debug("No Ready agents during queue poll # #{$sum}")
-        end
-      end 
+     stats = @trclient.task_queue_statistics(task_queue_id).realtime
+     qsize = stats["tasks_by_status"]["pending"]
+     readycount = stats["total_available_workers"]
 
       settings.sockets.each{|s| 
         msg =  { :queuesize => qsize, :readyagents => readycount}.to_json
