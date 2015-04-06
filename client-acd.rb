@@ -130,15 +130,11 @@ end ### End get /websocket
 # Inbound calls will simply Enqueue the call to the workflow
 
 post '/voice' do
-
-    response = Twilio::TwiML::Response.new do |r|  
-        r.Say("Please wait for the next availible agent ")
-        r.Enqueue workflowSid: workflow_id
-    end
-    logger.debug("Response text for /voice post = #{response.text}")
-    #update clients with new info, route calls if any
-    #getqueueinfo(mongoagents,logger, queueid, addtoq)
-    response.text
+  response = Twilio::TwiML::Response.new do |r|  
+    r.Say("Please wait for the next availible agent ")
+    r.Enqueue workflowSid: workflow_id
+  end
+  response.text
 end
 
 
