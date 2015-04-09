@@ -12,6 +12,9 @@ logger.level = Logger::DEBUG  #change to to get log level input from configurati
 set :sockets, [] 
 disable :protection  #necessary for ajax requests from a diffirent domain (like a SFDC iframe)
 
+enable :sessions
+
+
 #global vars
 $sum = 0   #number of iterations of checking the queue 
 
@@ -25,6 +28,21 @@ anycallerid = ENV['anycallerid'] || "none"   #If you set this in your ENV anycal
 workflow_id = ENV['twilio_workflow_id']
 workspace_id = ENV['twilio_workspace_id']
 task_queue_id = ENV['twilio_task_queue_id']
+mongohqdbstring = ENV['MONGOLAB_URI']
+
+########### DB Setup  ###################
+configure do
+  db = URI.parse(mongohqdbstring)
+  db_name = db.path.gsub(/^\//, '')   
+  @conn = Mongo::Connection.new(db.host, db.port).db(db_name)
+  @conn.authenticate(db.user, db.password) unless (db.user.nil? || db.user.nil?)
+  set :mongo_connection, @conn
+end
+# conversations will be stored in 'conversations' collection
+mongoconvos = settings.mongo_connection['conversations']
+
+
+##### end of db config #######
 
 
 ## used when outside of salesforce
@@ -86,8 +104,6 @@ end
 
   
 ## WEBSOCKETS: Accepts a inbound websocket connection. Connection will be used to send messages to the browser, and detect disconnects
-# 1. creates or updates agent in the db, and tracks how many broswers are connected with the "currentclientcount" parameter
-
 get '/websocket' do 
 
   request.websocket do |ws|
@@ -95,11 +111,11 @@ get '/websocket' do
     ws.onopen do
       logger.info("New Websocket Connection #{ws.object_id}") 
 
-      #query is wsclient=salesforceATuserDOTcom
+      #query is worker=workersid
       querystring = ws.request["query"]
-      clientname = querystring.split(/\=/)[1]
-      logger.info("Client #{clientname} connected from Websockets")
-      settings.sockets << ws     
+      worker = querystring.split(/\=/)[1]
+      logger.info("Worker #{worker} connected from Websockets")
+      settings.sockets << ws   
     end
 
     #currently don't recieve websocket messages from client 
@@ -111,9 +127,9 @@ get '/websocket' do
     ##websocket close
     ws.onclose do
       querystring = ws.request["query"]
-      clientname = querystring.split(/\=/)[1]
+      worker = querystring.split(/\=/)[1]
 
-      logger.info("Websocket closed for #{clientname}")
+      logger.info("Websocket closed for #{worker}")
 
       settings.sockets.delete(ws)
 
@@ -125,16 +141,78 @@ end ### End get /websocket
 
 
 
-# Handle incoming voice calls.. 
+# Handle incoming voice calls.
 # You point your inbound Twilio phone number inside your Twilio account to this url, such as https://yourserver.com/voice
 # Inbound calls will simply Enqueue the call to the workflow
 
 post '/voice' do
   response = Twilio::TwiML::Response.new do |r|  
     r.Say("Please wait for the next availible agent ")
-    r.Enqueue workflowSid: workflow_id
+    r.Enqueue workflowSid: workflow_id do |e|
+      e.TaskAttributes '{"task_type":"call"}'
+    end
   end
   response.text
+end
+
+# Handle incoming SMS.
+
+post '/sms' do
+  active_conversation = nil
+  # check for a conversation cookie
+  if session[:task]
+    # The cookie is present.  Look up to see if the conversation is still active
+    task = session[:task]
+    active_conversation = mongoconvos.find_one({ _id: task}) || false
+  end
+
+  if active_conversation
+    settings.sockets.each{|s|
+      querystring = s.request["query"]
+      worker = querystring.split(/\=/)[1]
+      if (worker == active_conversation["worker"])
+        msg = {:message => {:Body => params[:Body], :From => params[:From]}}.to_json
+        s.send(msg)
+      end
+    }
+  else
+    # We will create a new task.  First form our Task from the incoming SMS
+    task_attributes = {'task_type' => 'sms'}
+
+    #merge the incoming sms into our attributes
+    task_attributes = task_attributes.merge(params)
+
+    # Start a client to TaskRouter so we can create a new task
+    begin
+      @trclient = Twilio::REST::TaskRouterClient.new(account_sid, auth_token, workspace_id)
+
+      response = @trclient.tasks.create(attributes: task_attributes.to_json, WorkflowSid: workflow_id)
+
+      # attach the task id to a cookie to track conversations
+      session[:task] = response.sid
+    rescue Twilio::REST::RequestError => e
+      logger.info "Error creating task"
+      logger.info e
+    end
+  end
+end
+
+#Ajax call to send an SMS
+# - secure this in real life
+post '/send_sms' do
+  @client = Twilio::REST::Client.new(account_sid, auth_token)
+  account = @client.account
+  begin 
+    message = account.messages.create(
+      from: caller_id,
+      to: params[:To],
+      body: params[:Message]
+    )
+  rescue Twilio::REST::RequestError => e
+    logger.info "Error sending SMS"
+    logger.info e
+  end
+  return message.status
 end
 
 
@@ -162,19 +240,38 @@ end
 #######  This is called when agents is selected by TaskRouter to send the task ###############
 ## We will use the dequeue method of handling the assignment 
 ### https://www.twilio.com/docs/taskrouter/handling-assignment-callbacks#dequeue-call
+### from SMS messages we log the task associated with the worker to track conversations
 post '/assignment' do
-  raw_attributes = params[:TaskAttributes]
-  attributes = JSON.parse raw_attributes
-  logger.info attributes
-  from = attributes["from"]
-  logger.info from
-  assignment_instruction = {
-    instruction: 'dequeue',
-    from: from
-  }
+  attributes = JSON.parse params[:TaskAttributes]
+  task = params[:TaskSid]
+  worker = params[:WorkerSid]
+  assignment_instruction = {}
+  task_type = attributes["task_type"]
+  case task_type
+  when 'sms'
+    assignment_instruction = {
+      instruction: 'accept',
+      from: attributes["From"]
+    }
+    # create a conversation in the db to track
+    conversation = {_id: task, worker: worker}
+    id = mongoconvos.update({_id: task},  conversation, {upsert: true})
+  when 'call'
+    assignment_instruction = {
+      instruction: 'dequeue',
+      from: attributes["from"]
+    }
+  end
   content_type :json
   assignment_instruction.to_json
 
+end
+
+post '/wrapup' do
+  # Delete the db record as the conversation is now complete
+  logger.info "we are going to delete #{params[:task]}"
+  result = mongoconvos.remove({_id: params[:task]});
+  logger.info result
 end
 
 post '/event' do
@@ -255,11 +352,11 @@ Thread.new do
      readycount = stats["total_available_workers"]
 
       settings.sockets.each{|s| 
-        msg =  { :queuesize => qsize, :readyagents => readycount}.to_json
-        logger.debug("Sending webocket #{msg}");
+        msg =  { :stats => {:queuesize => qsize, :readyagents => readycount}}.to_json
+        #logger.debug("Sending webocket #{msg}");
         s.send(msg) 
       } 
-     logger.debug("run = #{$sum} #{Time.now} qsize = #{qsize} readyagents = #{readycount}")
+     #logger.debug("run = #{$sum} #{Time.now} qsize = #{qsize} readyagents = #{readycount}")
   end
 end
 

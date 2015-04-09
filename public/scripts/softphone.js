@@ -10,14 +10,13 @@ $(function() {
     SP.state.calltype = "";
     SP.username = $('#client_name').text();
     SP.currentCall = null;  //instance variable for tracking current connection
+    SP.currentTask = null;
     SP.requestedHold = false; //set if agent requested hold button
     SP.worker = null;
     SP.actvities = {
       ready: null,
       notReady: null
     };
-
-
 
     SP.functions = {};
 
@@ -26,11 +25,8 @@ $(function() {
         sforce.interaction.runApex('UserInfo', 'getUserName', '' , SP.functions.registerTwilioClient);
     }
 
-
     SP.functions.registerTwilioClient = function(response) {
-
       console.log("Registering with client name: " + response.result);
-
       // Twilio does not accept special characters in Client names
       var useresult = response.result;
       useresult = useresult.replace("@", "AT");
@@ -40,10 +36,6 @@ $(function() {
 
       $.get("/token", {"client":SP.username}, function (token) {
           Twilio.Device.setup(token, {debug: true});
-      });
-
-      $.get("/getcallerid", { "from":SP.username}, function(data) {
-        $("#callerid-entry > input").val(data);
       });
 
       // Register the TaskRouter worker
@@ -67,25 +59,35 @@ $(function() {
             }
           });
       });
-
-      SP.functions.startWebSocket();
-
     }
 
-    // callback for TaskRouter to tell use when agent state has changed
+    // TaskRouter callbacks
+    //  - ready - tells us when we are connected to TaskRouter
+    //  - activity.update - tells us of worker state changes
+    //  - reservation.created - tells us when our agent is assigned work (SMS in this case)
     SP.functions.registerTaskRouterCallbacks = function(){
       console.dir("Register callbacks");
+      SP.worker.on('ready', function(worker) {
+        SP.functions.startWebSocket(worker.sid);
+      });
       SP.worker.on('activity.update', function(worker) {
         SP.functions.updateStatus("", worker);
         console.log("Worker activity changed to: " + worker.activity_name);
       });
+      SP.worker.on('reservation.created', function(task){
+        if (task.attributes["task_type"] == 'sms'){
+          SP.currentTask = task.tasksid;
+          SP.functions.incomingSMS(task.attributes);
+        }
+      });
     }
 
 
-    SP.functions.startWebSocket = function() {
+    SP.functions.startWebSocket = function(worker) {
       // ** Agent Presence Stuff ** //
       console.log(".startWebSocket...");
-     var wsaddress = 'wss://' + window.location.host  + "/websocket?clientname=" + SP.username
+      console.log("worker is " + worker);
+     var wsaddress = 'wss://' + window.location.host  + "/websocket?worker=" + worker
 
      var ws = new WebSocket(wsaddress);
         
@@ -94,12 +96,19 @@ $(function() {
        };
       ws.onclose   = function()  { console.log('websocket closed'); }
       ws.onmessage = function(m) { 
-        console.log('websocket message: ' +  m.data);
-        
-        var result = JSON.parse(m.data);
+        //console.log('websocket message: ' +  m.data);
 
-        $("#team-status .queues-num").text(result.queuesize);
-        $("#team-status .agents-num").text(result.readyagents); 
+        // we get two events via websocket
+        // - the realtime agent stats each second
+        // - Conversational SMS messages that come in outside of TaskRouter     
+        var result = JSON.parse(m.data);
+        if (result.stats){
+          $("#team-status .queues-num").text(result.stats.queuesize);
+          $("#team-status .agents-num").text(result.stats.readyagents); 
+        }
+        else {
+          SP.functions.incomingSMS(result.message);
+        }
       };
 
     }
@@ -127,29 +136,39 @@ $(function() {
     //called when agent is not on a call
     SP.functions.setIdleState = function() {
         $("#action-buttons > .call").show();
+        $("#action-buttons > .send").hide();
         $("#action-buttons > .answer").hide();
         $("#action-buttons > .mute").hide();
         $("#action-buttons > .hold").hide();
         $("#action-buttons > .unhold").hide();
         $("#action-buttons > .hangup").hide();
+        $("#action-buttons > .wrapup").hide();
         $('div.agent-status').hide();
         $("#number-entry > input").val("");
+        $('div.numpad-container').show();
+        $('div#messages').hide();
     }
 
     SP.functions.setRingState = function () {
         $("#action-buttons > .answer").show();
         $("#action-buttons > .call").hide();
+        $("#action-buttons > .send").hide();
         $("#action-buttons > .mute").hide();
         $("#action-buttons > .hold").hide();
         $("#action-buttons > .unhold").hide();
         $("#action-buttons > .hangup").hide();
+        $("#action-buttons > .wrapup").hide();
+        $('div.numpad-container').show();
+        $('div#messages').hide();
     }
 
     SP.functions.setOnCallState = function() {
 
         $("#action-buttons > .answer").hide();
+        $("#action-buttons > .wrapup").hide();
         $("#action-buttons > .call").hide();
         $("#action-buttons > .mute").show();
+        $("#action-buttons > .send").hide();
 
         //can not hold outbound calls, so disable this
         if (SP.calltype == "Inbound") {
@@ -158,6 +177,39 @@ $(function() {
 
         $("#action-buttons > .hangup").show();
         $('div.agent-status').show();
+    }
+
+    SP.functions.setSmsState = function() {
+        $("#action-buttons > .answer").hide();
+        $("#action-buttons > .call").hide();
+        $("#action-buttons > .mute").hide();
+        $("#action-buttons > .hold").hide();
+        $("#action-buttons > .unhold").hide();
+        $("#action-buttons > .hangup").hide();
+
+        $("#action-buttons > .send").show();
+        $("#action-buttons > .wrapup").show();
+        $('div.numpad-container').hide();
+        $('div#messages').show();
+
+    }
+
+    SP.functions.incomingSMS = function(sms) {
+      // Update agent status 
+      sforce.interaction.setVisible(true);  //pop up CTI console
+      SP.functions.detachSendButton();
+      SP.functions.attachWrapUpButton();
+      SP.functions.setSmsState();
+
+      var inboundnum = cleanInboundTwilioNumber(sms["From"]);
+      sforce.interaction.searchAndScreenPop(inboundnum, 'con10=' + inboundnum + '&con12=' + inboundnum + '&name_firstcon2=' + name,'inbound');
+      $("#number-entry > input").val(inboundnum);
+      SP.functions.displayMessage("inbound", sms["Body"]);
+      SP.functions.attachSendButton();
+    }
+
+    SP.functions.displayMessage = function(direction, message) {
+      $("div#messages-container").append("<div class=messagecardthread-"+direction+"><span class=message-text>"+message+"</span></div>");
     }
 
     // Hide caller info
@@ -205,6 +257,36 @@ $(function() {
       $("#action-buttons > button.answer").unbind().removeClass('active').addClass("inactive");
     }
 
+    SP.functions.attachSendButton = function() {
+      $("#action-buttons > button.send").unbind().click(function() {
+        $.post("/send_sms", { "To": $("#number-entry > input").val(), "From": $("#callerid-entry > input").val(), "Message": $("#message-entry > input").val() }, function(data) {
+            SP.functions.displayMessage("outbound", $("#message-entry > input").val());
+            $("#message-entry > input").val('');   
+          });
+      }).removeClass('inactive').addClass("active");
+    }
+
+    SP.functions.detachSendButton = function() {
+      $("#action-buttons > button.send").unbind().removeClass('active').addClass("inactive");
+    }
+
+    SP.functions.attachWrapUpButton = function() {
+      $("#action-buttons > button.wrapup").click(function() {
+        // clear out the chat
+        $("div#messages-container").empty();
+
+        // clean out the conversation in the DB
+        $.post("/wrapup", { "task":SP.currentTask }, function(data) {});
+
+        // make ready
+        SP.functions.ready();
+      }).removeClass('inactive').addClass("active");
+    }
+
+    SP.functions.detachWrapUpButton = function() {
+      $("#action-buttons > button.wrapup").unbind().removeClass('active').addClass("inactive");
+    }
+
     SP.functions.attachMuteButton = function(conn) {
       $("#action-buttons > button.mute").click(function() {
         conn.mute();
@@ -240,8 +322,7 @@ $(function() {
 
     SP.functions.attachUnHold = function(conn, holdid) {
       $("#action-buttons > button.unhold").click(function() {
-        //do ajax request to hold for the conn.id
-         
+        //do ajax request to hold for the conn.id         
          $.post("/request_unhold", { "from":SP.username, "callsid":holdid }, function(data) {
              //Todo: handle errors
              //Todo: change status in future
@@ -255,9 +336,6 @@ $(function() {
       $("#action-buttons > button.unhold").unbind().removeClass('active').addClass("inactive");
       $("#action-buttons > button.hold").unbind().removeClass('active').addClass("inactive");
     }
-
-
-
 
     SP.functions.updateAgentStatusText = function(statusCategory, statusText, inboundCall) {
 
@@ -292,7 +370,6 @@ $(function() {
         $('#softphone').addClass('incoming');
         $("#number-entry > input").val(statusText);
       }
-
       //$("#agent-status > p").text(statusText);
     }
 
@@ -318,14 +395,12 @@ $(function() {
       SP.functions.notReady();
     });
 
-      $("#agent-status-controls > button.userinfo").click( function( ) {
-
+    $("#agent-status-controls > button.userinfo").click( function( ) {
 
     });
 
     // ** Twilio Client Stuff ** //
     // first register outside of sfdc
-
 
     if ( window.self === window.top ) {  
           console.log("Not in an iframe, assume we are using default client");
@@ -364,9 +439,7 @@ $(function() {
     Twilio.Device.disconnect(function (conn) {
         console.log("disconnectiong...");
         SP.functions.updateAgentStatusText("ready", "Call ended");
-
-        
-        
+                
         SP.state.callNumber = null;
         
         // deactivate answer button
@@ -461,9 +534,6 @@ $(function() {
 
     // Set server-side status to ready / not-ready
     SP.functions.notReady = function() {
-      //$.post("/track", { "from":SP.username, "status":"NotReady" }, function(data) {
-      //  SP.functions.updateStatus();
-      //});
       SP.worker.updateActivity(SP.actvities.notReady, function(error, worker){
         SP.functions.updateStatus(error, worker);
       });
@@ -471,11 +541,6 @@ $(function() {
     }
 
     SP.functions.ready = function() {
-
-      //$.post("/track", { "from":SP.username, "status":"Ready" }, function(data) {
-      //    SP.functions.updateStatus();
-      //
-      //});
       SP.worker.updateActivity(SP.actvities.ready, function(error, worker){
         SP.functions.updateStatus(error, worker);
       });
@@ -485,6 +550,7 @@ $(function() {
     // Check the status on the server and update the agent status dialog accordingly
     SP.functions.updateStatus = function(error, worker) {
       if (worker.activity_name == "Idle") {
+        SP.functions.setIdleState();
         SP.functions.updateAgentStatusText("ready", "Ready");
       } else {
         SP.functions.updateAgentStatusText("notReady", "Not Ready");

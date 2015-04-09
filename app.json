@@ -3,6 +3,7 @@
   "description": "Twilio softphone with AxD where x = anything you want",
   "website": "https://github.com/bcoyle73/client-acd",
   "success_url": "/",
+  "addons": ["mongolab"],
   "env": {
     "twilio_account_sid": {
             "description": "Your Twilio account Id"
