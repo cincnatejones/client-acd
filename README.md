@@ -50,6 +50,7 @@ To get your configuration variables:
 - Buy a Twilio phone number - you will need this for subseqent steps.
   - Note the Phone number created here. You will need it for later for the twilio_caller_id parameter.
   - You will also use this phone number to accept new calls once you create a Heroku (or local tunnel) deploy. You will add to your Twilio voice url: http://myapp.herokuapp.com/voice to accept new calls.
+  - You will also need to configure the SMS endpoint where new SMS messages will be handled.  Add your Twilio messaging url: http://myapp.herokuapp.com/sms to accept new SMS messages.
 
 - Create a TaskRouter Workspace
   - Set name which can be anything - for example = Client-acd.

@@ -156,7 +156,6 @@ post '/voice' do
 end
 
 # Handle incoming SMS.
-
 post '/sms' do
   active_conversation = nil
   # check for a conversation cookie
@@ -165,7 +164,7 @@ post '/sms' do
     task = session[:task]
     active_conversation = mongoconvos.find_one({ _id: task}) || false
   end
-
+  # if the conversation is in the DB don't use TaskRouter.  Just push the message to the worker
   if active_conversation
     settings.sockets.each{|s|
       querystring = s.request["query"]
