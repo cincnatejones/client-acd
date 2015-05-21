@@ -346,7 +346,8 @@ end
 Thread.new do 
    while true do
      sleep(1)
-     stats = @trclient.task_queue_statistics(task_queue_id).realtime
+     all_stats = @trclient.task_queues.get(task_queue_id)
+     stats = all_stats.statistics.realtime
      qsize = stats["tasks_by_status"]["pending"]
      readycount = stats["total_available_workers"]
 

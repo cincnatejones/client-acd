@@ -1,6 +1,6 @@
 source 'http://rubygems.org'
 gem 'sinatra'
-gem 'twilio-ruby', '~> 3.15'
+gem 'twilio-ruby', '~> 4.1'
 gem 'json'
 gem 'sinatra-websocket'
 gem 'mongo'
