@@ -18,6 +18,15 @@ $(function() {
       notReady: null
     };
 
+    // For video
+    SP.endpoint = null;
+    SP.videoAccessToken 
+
+    // check for WebRTC
+    if (!navigator.webkitGetUserMedia && !navigator.mozGetUserMedia) {
+      alert('WebRTC is not available in your browser.');
+    }
+
     SP.functions = {};
 
         // Get a Twilio Client name and register with Twilio
@@ -58,6 +67,11 @@ $(function() {
               }       
             }
           });
+      });
+
+      // Register the conversation endpoint
+      $.get("/conversationtoken", {"client":SP.username}, function (conversationToken) {
+
       });
     }
 

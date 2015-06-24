@@ -102,6 +102,17 @@ get '/workertoken' do
   return workertoken || ""
 end 
 
+# Conversation token generator
+get '/conversationtoken' do
+  endpoint_name = params[:client]
+  if endpoint_name
+    token = Twilio::Util::AccessToken.new account_sid, account_sid, auth_token
+    token.add_endpoint_grant endpoint_name
+    token.enable_nts
+  end
+  return token.to_jwt || ""
+end
+
   
 ## WEBSOCKETS: Accepts a inbound websocket connection. Connection will be used to send messages to the browser, and detect disconnects
 get '/websocket' do 
