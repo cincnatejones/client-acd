@@ -343,4 +343,5 @@ DEPENDENCIES
   mongo (~> 1.12)
   sinatra
   sinatra-websocket
+  thin (~> 1.6.4)
   twilio-ruby (~> 4.2)
