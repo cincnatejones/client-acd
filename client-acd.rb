@@ -28,7 +28,7 @@ anycallerid = ENV['anycallerid'] || "none"   #If you set this in your ENV anycal
 workflow_id = ENV['twilio_workflow_id']
 workspace_id = ENV['twilio_workspace_id']
 task_queue_id = ENV['twilio_task_queue_id']
-mongohqdbstring = ENV['MONGOLAB_URI']
+mongohqdbstring = ENV['MONGODB_URI']
 
 ########### DB Setup  ###################
 configure do
