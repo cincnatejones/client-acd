@@ -9,14 +9,14 @@ require 'logger'
 logger = Logger.new(STDOUT)
 logger.level = Logger::DEBUG  #change to to get log level input from configuration
 
-set :sockets, [] 
+set :sockets, []
 disable :protection  #necessary for ajax requests from a diffirent domain (like a SFDC iframe)
 
 enable :sessions
 
 
 #global vars
-$sum = 0   #number of iterations of checking the queue 
+$sum = 0   #number of iterations of checking the queue
 
 ############ CONFIG ###########################
 # Find these values at twilio.com/user/account
@@ -24,7 +24,7 @@ account_sid = ENV['twilio_account_sid']
 auth_token =  ENV['twilio_account_token']
 app_id =  ENV['twilio_app_id']
 caller_id = ENV['twilio_caller_id']  #number your agents will click2dialfrom
-anycallerid = ENV['anycallerid'] || "none"   #If you set this in your ENV anycallerid=inline the callerid box will be displayed to users.  To use anycallerid (agents set their own caller id), your Twilio Account must be provisioned.  So default is false, agents wont' be able to use any callerid. 
+anycallerid = ENV['anycallerid'] || "none"   #If you set this in your ENV anycallerid=inline the callerid box will be displayed to users.  To use anycallerid (agents set their own caller id), your Twilio Account must be provisioned.  So default is false, agents wont' be able to use any callerid.
 workflow_id = ENV['twilio_workflow_id']
 workspace_id = ENV['twilio_workspace_id']
 task_queue_id = ENV['twilio_task_queue_id']
@@ -33,7 +33,7 @@ mongohqdbstring = ENV['MONGODB_URI']
 ########### DB Setup  ###################
 configure do
   db = URI.parse(mongohqdbstring)
-  db_name = db.path.gsub(/^\//, '')   
+  db_name = db.path.gsub(/^\//, '')
   @conn = Mongo::Connection.new(db.host, db.port).db(db_name)
   @conn.authenticate(db.user, db.password) unless (db.user.nil? || db.user.nil?)
   set :mongo_connection, @conn
@@ -76,11 +76,11 @@ get '/token' do
   end
   capability = Twilio::Util::Capability.new account_sid, auth_token
       # Create an application sid at twilio.com/user/account/apps and use it here
-      capability.allow_client_outgoing app_id 
+      capability.allow_client_outgoing app_id
       capability.allow_client_incoming client_name
       token = capability.generate
   return token
-end 
+end
 
 ## Receives the client id loops through the defined workers for this workspace
 ## If a workers is defined with the client name it returns a token for the TaskRouter worker
@@ -100,41 +100,41 @@ get '/workertoken' do
     end
   end
   return workertoken || ""
-end 
-
-# Conversation token generator
-get '/conversationtoken' do
-  endpoint_name = params[:client]
-  if endpoint_name
-    token = Twilio::Util::AccessToken.new account_sid, account_sid, auth_token
-    token.add_endpoint_grant endpoint_name
-    token.enable_nts
-  end
-  return token.to_jwt || ""
 end
 
-  
+# Conversation token generator
+#get '/conversationtoken' do
+#  endpoint_name = params[:client]
+#  if endpoint_name
+#    token = Twilio::Util::AccessToken.new account_sid, account_sid, auth_token
+#    token.add_endpoint_grant endpoint_name
+#    token.enable_nts
+#  end
+#  return token.to_jwt || ""
+#end
+
+
 ## WEBSOCKETS: Accepts a inbound websocket connection. Connection will be used to send messages to the browser, and detect disconnects
-get '/websocket' do 
+get '/websocket' do
 
   request.websocket do |ws|
     #we use .onopen to identify new clients
     ws.onopen do
-      logger.info("New Websocket Connection #{ws.object_id}") 
+      logger.info("New Websocket Connection #{ws.object_id}")
 
       #query is worker=workersid
       querystring = ws.request["query"]
       worker = querystring.split(/\=/)[1]
       logger.info("Worker #{worker} connected from Websockets")
-      settings.sockets << ws   
+      settings.sockets << ws
     end
 
-    #currently don't recieve websocket messages from client 
+    #currently don't recieve websocket messages from client
     ws.onmessage do |msg|
       logger.debug("Received websocket message:  #{msg}")
     end
 
-    
+
     ##websocket close
     ws.onclose do
       querystring = ws.request["query"]
@@ -147,7 +147,7 @@ get '/websocket' do
     end  ### End Websocket close
 
 
-  end  #### End request.websocket 
+  end  #### End request.websocket
 end ### End get /websocket
 
 
@@ -157,7 +157,7 @@ end ### End get /websocket
 # Inbound calls will simply Enqueue the call to the workflow
 
 post '/voice' do
-  response = Twilio::TwiML::Response.new do |r|  
+  response = Twilio::TwiML::Response.new do |r|
     r.Say("Please wait for the next availible agent ")
     r.Enqueue workflowSid: workflow_id do |e|
       e.TaskAttributes '{"task_type":"call"}'
@@ -212,7 +212,7 @@ end
 post '/send_sms' do
   @client = Twilio::REST::Client.new(account_sid, auth_token)
   account = @client.account
-  begin 
+  begin
     message = account.messages.create(
       from: caller_id,
       to: params[:To],
@@ -228,17 +228,17 @@ end
 
 #######  This is called when agents click2dial ###############
 # In Twilio, you set up a Twiml App, by going to Account -> Dev Tools - > Twiml Apps.  The app created here gives you the twilio_app_id requried for config.
-# You then point the voice url for that app id to this url, such as "https://yourserver.com/dial" 
+# You then point the voice url for that app id to this url, such as "https://yourserver.com/dial"
 # This method will be called when a client clicks
 
 post '/dial' do
     puts "Params for dial = #{params}"
-    
+
     number = params[:PhoneNumber]
 
 
     response = Twilio::TwiML::Response.new do |r|
-        # outboudn dialing (from client) must have a :callerId    
+        # outboudn dialing (from client) must have a :callerId
         r.Dial :callerId => caller_id do |d|
           d.Number number
         end
@@ -248,7 +248,7 @@ post '/dial' do
 end
 
 #######  This is called when agents is selected by TaskRouter to send the task ###############
-## We will use the dequeue method of handling the assignment 
+## We will use the dequeue method of handling the assignment
 ### https://www.twilio.com/docs/taskrouter/handling-assignment-callbacks#dequeue-call
 ### from SMS messages we log the task associated with the worker to track conversations
 post '/assignment' do
@@ -305,10 +305,10 @@ post '/request_hold' do
 
 
     puts "callsid = #{callsid} for calltype = #{calltype}"
-    
+
     customer_call = @client.account.calls.get(callsid)
     customer_call.update(:url => "#{request.base_url}/hold",
-                 :method => "POST")  
+                 :method => "POST")
     puts customer_call.to
     return callsid
 end
@@ -316,7 +316,7 @@ end
 #Twiml response for hold, currently uses Monkey as hold music
 post '/hold' do
     response = Twilio::TwiML::Response.new do |r|
-      r.Play "http://com.twilio.sounds.music.s3.amazonaws.com/ClockworkWaltz.mp3", :loop=>0 
+      r.Play "http://com.twilio.sounds.music.s3.amazonaws.com/ClockworkWaltz.mp3", :loop=>0
     end
 
     puts response.text
@@ -332,7 +332,7 @@ post '/request_unhold' do
 
     call = @client.account.calls.get(callsid)
     call.update(:url => "#{request.base_url}/send_to_agent?target_agent=#{from}",
-                 :method => "POST")  
+                 :method => "POST")
     puts call.to
 end
 
@@ -344,31 +344,31 @@ post '/send_to_agent' do
    response = Twilio::TwiML::Response.new do |r|
       r.Dial do |d|
         d.Client target_agent
-      end 
+      end
    end
 
    puts response.text
-   response.text  
+   response.text
 
 end
 
 ## Thread that polls to get current queue size, and updates websocket clients with new info
 ## We now use the TaskRouter rest client to query workers and agents
-Thread.new do 
-   while true do
-     sleep(1)
-     all_stats = @trclient.task_queues.get(task_queue_id)
-     stats = all_stats.statistics.realtime
-     qsize = stats["tasks_by_status"]["pending"]
-     readycount = stats["total_available_workers"]
+##Thread.new do
+##   while true do
+##     sleep(1)
+##     all_stats = @trclient.task_queues.get(task_queue_id)
+##     stats = all_stats.statistics.realtime
+##     qsize = stats["tasks_by_status"]["pending"]
+##     readycount = stats["total_available_workers"]
+##
+##      settings.sockets.each{|s|
+##        msg =  { :stats => {:queuesize => qsize, :readyagents => readycount}}.to_json
+##        #logger.debug("Sending webocket #{msg}");
+##        s.send(msg)
+##      }
+##     #logger.debug("run = #{$sum} #{Time.now} qsize = #{qsize} readyagents = #{readycount}")
+##  end
+#end
 
-      settings.sockets.each{|s| 
-        msg =  { :stats => {:queuesize => qsize, :readyagents => readycount}}.to_json
-        #logger.debug("Sending webocket #{msg}");
-        s.send(msg) 
-      } 
-     #logger.debug("run = #{$sum} #{Time.now} qsize = #{qsize} readyagents = #{readycount}")
-  end
-end
-
-Thread.abort_on_exception = true
+#Thread.abort_on_exception = true

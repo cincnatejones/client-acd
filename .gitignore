@@ -1,4 +1,4 @@
 .DS_Store
 config_file.yml
-
+.environment_variables
 
