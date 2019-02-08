@@ -1,5 +1,5 @@
 source 'http://rubygems.org'
-ruby "2.2.5"
+ruby "2.5.3"
 gem 'sinatra', '1.4.7'
 gem 'twilio-ruby', '4.2'
 gem 'json'
