@@ -50,7 +50,7 @@ DEPENDENCIES
   twilio-ruby (= 4.2)
 
 RUBY VERSION
-   ruby 2.2.5p319
+   ruby 2.5.3
 
 BUNDLED WITH
    1.13.3
